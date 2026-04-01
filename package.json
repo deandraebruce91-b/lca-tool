@@ -1,0 +1,29 @@
+{
+  "name": "lca",
+  "version": "1.0.0",
+  "description": "Raw Materials Landed Cost Allocator",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  },
+  "keywords": [
+    "landed-cost",
+    "freight-allocator",
+    "raw-materials",
+    "supply-chain",
+    "sourcing",
+    "trims",
+    "cost-calculator"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,783 @@
+import { useState, useEffect } from "react";
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const SHIP_MODES = [
+  { value: "ocean_fcl", label: "Ocean FCL", vd: 1000 },
+  { value: "ocean_lcl", label: "Ocean LCL", vd: 1000 },
+  { value: "air", label: "Air Freight", vd: 5000 },
+  { value: "parcel", label: "Parcel", vd: 5000 },
+  { value: "ltl", label: "LTL Trucking", vd: null },
+  { value: "ftl", label: "FTL Trucking", vd: null },
+];
+const CONTAINERS = [
+  { value: "20ft", label: "20' Std", cbm: 33.2 },
+  { value: "40ft", label: "40' Std", cbm: 67.7 },
+  { value: "40hc", label: "40' HC", cbm: 76.3 },
+  { value: "45hc", label: "45' HC", cbm: 86.0 },
+];
+const INCOS = [
+  { value: "EXW", label: "EXW", fr: false, ins: false },
+  { value: "FOB", label: "FOB", fr: false, ins: false },
+  { value: "CIF", label: "CIF", fr: true, ins: true },
+  { value: "CFR", label: "CFR", fr: true, ins: false },
+  { value: "DDP", label: "DDP", fr: true, ins: true },
+  { value: "DAP", label: "DAP", fr: true, ins: false },
+];
+const ALLOC = [
+  { value: "by_weight", label: "By Weight" },
+  { value: "by_volume", label: "By Volume (CBM)" },
+  { value: "by_unit_count", label: "By Unit Count" },
+  { value: "by_fob_value", label: "By FOB Value" },
+];
+const CTYPES = [
+  { value: "freight", label: "Freight", dm: "by_weight", nat: "scalable" },
+  { value: "brokerage", label: "Brokerage", dm: "by_unit_count", nat: "fixed" },
+  { value: "insurance", label: "Insurance", dm: "by_fob_value", nat: "scalable" },
+  { value: "drayage", label: "Drayage", dm: "by_weight", nat: "scalable" },
+  { value: "handling", label: "Warehouse Handling", dm: "by_unit_count", nat: "fixed" },
+  { value: "customs_exam", label: "Customs Exam", dm: "by_unit_count", nat: "fixed" },
+  { value: "terminal", label: "Terminal Handling", dm: "by_unit_count", nat: "fixed" },
+  { value: "filing", label: "AMS/ISF Filing", dm: "by_unit_count", nat: "fixed" },
+  { value: "other", label: "Other / Misc", dm: "by_fob_value", nat: "scalable" },
+];
+const SUPP_CTYPES = [
+  { value: "bank_fees", label: "Bank Fees" },
+  { value: "declaration_fees", label: "Declaration Fees" },
+  { value: "supplier_other", label: "Other" },
+];
+const DTYPES = [
+  { value: "ad_valorem", label: "Ad Valorem (%)" },
+  { value: "specific", label: "Specific ($/unit)" },
+  { value: "compound", label: "Compound (% + $)" },
+];
+const UOMS = [
+  { value: "pcs", label: "Pieces" },
+  { value: "yds", label: "Yards" },
+  { value: "m", label: "Meters" },
+  { value: "prs", label: "Pairs" },
+  { value: "sets", label: "Sets" },
+  { value: "rolls", label: "Rolls" },
+];
+const WT_UOMS = [
+  { value: "g", label: "Grams", toKg: 0.001 },
+  { value: "kg", label: "Kilograms", toKg: 1 },
+  { value: "oz", label: "Ounces", toKg: 0.0283495 },
+  { value: "lb", label: "Pounds", toKg: 0.453592 },
+];
+const SURCH_TYPES = [
+  { value: "moq", label: "MOQ Surcharge" },
+  { value: "dyeing", label: "Dyeing Charge" },
+  { value: "finish", label: "Finish Upcharge" },
+  { value: "other_surcharge", label: "Other" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════
+const uid = () => Math.random().toString(36).substr(2, 9);
+const R = v => Math.round((v + Number.EPSILON) * 100) / 100;
+const fmt = v => (v == null || isNaN(v)) ? "\u2014" : "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = v => (v == null || isNaN(v)) ? "\u2014" : v.toFixed(1) + "%";
+const ld = k => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
+const sv = (k, d) => { try { localStorage.setItem(k, JSON.stringify(d)); } catch {} };
+
+// ═══════════════════════════════════════════════════════════════
+// FACTORIES
+// ═══════════════════════════════════════════════════════════════
+const mkSurch = () => ({ id: uid(), type: "moq", amount: "" });
+const mkStyleAlloc = () => ({ id: uid(), style: "" });
+const mkLotAlloc = () => ({ id: uid(), lot: "" });
+const mkItem = () => ({
+  id: uid(), po_number: "", supplier_code: "", item_code: "", color_code: "", quantity: "",
+  uom: "pcs", description: "", unit_cost_fob: "", unit_weight: "", weight_uom: "g",
+  bag_count: "", bag_detail: "", hs_code: "", duty_type: "ad_valorem",
+  duty_rate_pct: "", duty_specific: "", duty_amount_total: "", duty_surcharge_pct: "",
+  fx_rate: "", surcharges: [], styles: [], lots: [], ciOpen: false, allocOpen: false,
+});
+const mkPkg = () => ({ id: uid(), package_number: "", length_cm: "", width_cm: "", height_cm: "", gross_weight_kg: "", items: [mkItem()] });
+const mkCost = () => ({ id: uid(), cost_type: "freight", amount: "", allocation_method: "by_weight", nature: "scalable" });
+const mkSuppCost = () => ({ id: uid(), supplier_code: "", cost_type: "bank_fees", label: "", amount: "" });
+const mkShip = () => ({
+  id: uid(), shipment_ref: "", date_shipped: "", date_received: "",
+  origin_country: "", destination: "", shipment_mode: "ocean_fcl",
+  container_type: "40hc", incoterms: "FOB", currency: "USD", fx_rate: "1.0",
+  costs: [mkCost()], packages: [mkPkg()], supplier_costs: [],
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ENGINE
+// ═══════════════════════════════════════════════════════════════
+function calc(ship) {
+  const errs = [], warns = [];
+  const mode = SHIP_MODES.find(m => m.value === ship.shipment_mode);
+  const ctnr = CONTAINERS.find(c => c.value === ship.container_type);
+  const inco = INCOS.find(i => i.value === ship.incoterms);
+  const sFx = parseFloat(ship.fx_rate) || 1;
+
+  if (inco) {
+    ship.costs.forEach(c => {
+      if (inco.fr && (c.cost_type === "freight" || c.cost_type === "drayage") && parseFloat(c.amount) > 0)
+        warns.push(`${c.cost_type} entered but ${ship.incoterms} typically includes freight in unit price.`);
+      if (inco.ins && c.cost_type === "insurance" && parseFloat(c.amount) > 0)
+        warns.push(`Insurance entered but ${ship.incoterms} typically includes insurance.`);
+    });
+  }
+
+  const all = [];
+  ship.packages.forEach(pkg => {
+    const pL = parseFloat(pkg.length_cm) || 0, pW = parseFloat(pkg.width_cm) || 0, pH = parseFloat(pkg.height_cm) || 0;
+    const pWt = parseFloat(pkg.gross_weight_kg) || 0;
+    const pCbm = (pL > 0 && pW > 0 && pH > 0) ? (pL * pW * pH) / 1e6 : 0;
+
+    pkg.items.forEach(it => {
+      const qty = parseFloat(it.quantity) || 0;
+      const fob = parseFloat(it.unit_cost_fob) || 0;
+      const fx = parseFloat(it.fx_rate) || sFx;
+      const rawWt = parseFloat(it.unit_weight) || 0;
+      const wtConv = WT_UOMS.find(w => w.value === it.weight_uom)?.toKg || 0.001;
+      const unitWtKg = rawWt * wtConv;
+      const totWt = qty * unitWtKg;
+
+      if (qty <= 0 && it.item_code) errs.push(`${it.item_code}: Qty must be > 0`);
+
+      let surchTot = 0;
+      (it.surcharges || []).forEach(s => { surchTot += parseFloat(s.amount) || 0; });
+      const surchPU = qty > 0 ? R(surchTot / qty) : 0;
+
+      let dutyPU = 0;
+      const dR = parseFloat(it.duty_rate_pct) || 0, dS = parseFloat(it.duty_specific) || 0;
+      const dT = parseFloat(it.duty_amount_total) || 0, dSur = parseFloat(it.duty_surcharge_pct) || 0;
+      if (dT > 0 && (dR > 0 || dS > 0)) { warns.push(`${it.item_code}: Both rate AND total. Using total.`); dutyPU = qty > 0 ? dT / qty : 0; }
+      else if (dT > 0) dutyPU = qty > 0 ? dT / qty : 0;
+      else if (it.duty_type === "ad_valorem") dutyPU = fob * fx * (dR / 100);
+      else if (it.duty_type === "specific") dutyPU = dS;
+      else if (it.duty_type === "compound") dutyPU = (fob * fx * (dR / 100)) + dS;
+      if (dSur > 0) dutyPU += fob * fx * (dSur / 100);
+      if (fob === 0 && qty > 0) warns.push(`${it.item_code || "(blank)"}: FOB is $0`);
+
+      all.push({
+        ...it, qty, fob: fob * fx, unitWtKg, totWt, totFob: qty * fob * fx,
+        dutyPU: R(dutyPU), surchPU, surchTot, pkgNum: pkg.package_number,
+        pkgCbm: pCbm, pkgWt: pWt, pkgId: pkg.id, ac: {},
+      });
+    });
+  });
+
+  if (errs.length) return { errs, warns, res: [], sum: null };
+
+  const grps = {};
+  all.forEach(i => { if (!grps[i.pkgId]) grps[i.pkgId] = []; grps[i.pkgId].push(i); });
+  all.forEach(i => {
+    const g = grps[i.pkgId], gW = g.reduce((s, x) => s + x.totWt, 0), gF = g.reduce((s, x) => s + x.totFob, 0);
+    if (gW > 0) { i.shrWt = (i.totWt / gW) * i.pkgWt; i.shrCbm = (i.totWt / gW) * i.pkgCbm; }
+    else if (gF > 0) { i.shrWt = (i.totFob / gF) * i.pkgWt; i.shrCbm = (i.totFob / gF) * i.pkgCbm; }
+    else { i.shrWt = i.pkgWt / g.length; i.shrCbm = i.pkgCbm / g.length; }
+  });
+
+  const tU = all.reduce((s, i) => s + i.qty, 0);
+  const tF = all.reduce((s, i) => s + i.totFob, 0);
+  const tW = all.reduce((s, i) => s + (i.shrWt || 0), 0);
+  const tC = all.reduce((s, i) => s + (i.shrCbm || 0), 0);
+  const comps = ship.costs.filter(c => parseFloat(c.amount) > 0);
+  const recon = [];
+
+  comps.forEach(comp => {
+    const amt = parseFloat(comp.amount) || 0;
+    let den, gs;
+    switch (comp.allocation_method) {
+      case "by_weight": den = tW; gs = i => i.shrWt || 0; break;
+      case "by_volume": den = tC; gs = i => i.shrCbm || 0; break;
+      case "by_unit_count": den = tU; gs = i => i.qty; break;
+      case "by_fob_value": den = tF; gs = i => i.totFob; break;
+      default: den = tU; gs = i => i.qty;
+    }
+    if (den === 0) { errs.push(`${comp.cost_type}: Denominator 0 for "${comp.allocation_method}"`); return; }
+    let al = all.map(i => R((gs(i) / den) * amt));
+    const sm = al.reduce((s, v) => s + v, 0), rem = R(amt - sm);
+    if (Math.abs(rem) > 0.001) { let mi = 0, mv = 0; al.forEach((v, i) => { if (v > mv) { mv = v; mi = i; } }); al[mi] = R(al[mi] + rem); }
+    recon.push({ label: CTYPES.find(t => t.value === comp.cost_type)?.label || comp.cost_type, entered: amt, allocated: R(al.reduce((s, v) => s + v, 0)), pass: Math.abs(R(al.reduce((s, v) => s + v, 0)) - amt) <= 0.01 });
+    all.forEach((it, idx) => { if (!it.ac[comp.cost_type]) it.ac[comp.cost_type] = 0; it.ac[comp.cost_type] += al[idx]; });
+  });
+
+  ship.supplier_costs.filter(c => parseFloat(c.amount) > 0).forEach(sc => {
+    const amt = parseFloat(sc.amount) || 0;
+    const si = all.filter(i => i.supplier_code === sc.supplier_code);
+    const sf = si.reduce((s, i) => s + i.totFob, 0);
+    if (!si.length) { warns.push(`Supplier cost for "${sc.supplier_code}" \u2014 no items match.`); return; }
+    si.forEach(it => { const sh = sf > 0 ? R((it.totFob / sf) * amt) : R(amt / si.length); const k = "s_" + sc.cost_type; if (!it.ac[k]) it.ac[k] = 0; it.ac[k] += sh; });
+  });
+
+  if (errs.length) return { errs, warns, res: [], sum: null };
+
+  const res = all.map(i => {
+    const ta = Object.values(i.ac).reduce((s, v) => s + v, 0);
+    const apu = i.qty > 0 ? R(ta / i.qty) : 0;
+    const landed = R(i.fob + apu + i.dutyPU + i.surchPU);
+    const infl = i.fob > 0 ? R(((landed - i.fob) / i.fob) * 100) : null;
+    return { ic: i.item_code, po: i.po_number, sup: i.supplier_code, clr: i.color_code, desc: i.description, qty: i.qty, uom: i.uom, fob: i.fob, apu, dpu: i.dutyPU, spu: i.surchPU, landed, infl, pkg: i.pkgNum };
+  });
+
+  const tSC = comps.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0)
+    + ship.supplier_costs.filter(c => parseFloat(c.amount) > 0).reduce((s, c) => s + (parseFloat(c.amount) || 0), 0)
+    + all.reduce((s, i) => s + i.surchTot + (i.dutyPU * i.qty), 0);
+  const tL = res.reduce((s, r) => s + (r.landed * r.qty), 0);
+  let util = null;
+  if (ship.shipment_mode === "ocean_fcl" && ctnr && tC > 0) util = R((tC / ctnr.cbm) * 100);
+
+  return { errs, warns, res, recon, sum: { tU, tF: R(tF), tSC: R(tSC), tL: R(tL), avgInfl: tF > 0 ? R(((tL - tF) / tF) * 100) : null, ff: tF > 0 ? R((tSC / tF) * 100) : null, cpu: tU > 0 ? R(tSC / tU) : null, ccbm: tC > 0 ? R(tSC / tC) : null, ckg: tW > 0 ? R(tSC / tW) : null, util, tC: R(tC), tW: R(tW) } };
+}
+
+function expCsv(cr) {
+  if (!cr?.res) return;
+  const h = ["Pkg", "Item", "PO", "Supplier", "Color", "Desc", "Qty", "UOM", "FOB/u", "Alloc/u", "Duty/u", "Srchg/u", "Landed/u", "Inflate%"];
+  const rows = cr.res.map(r => [r.pkg, r.ic, r.po, r.sup, r.clr, r.desc, r.qty, r.uom, r.fob, r.apu, r.dpu, r.spu, r.landed, r.infl ?? ""]);
+  const csv = [h, ...rows].map(r => r.map(v => `"${v}"`).join(",")).join("\n");
+  const b = new Blob([csv], { type: "text/csv" }); const u = URL.createObjectURL(b);
+  const a = document.createElement("a"); a.href = u; a.download = "landed_cost_raw_materials.csv"; a.click(); URL.revokeObjectURL(u);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STYLES
+// ═══════════════════════════════════════════════════════════════
+const K = {
+  bg: "#0A0A0B", s1: "#141416", s2: "#1E1E22", s3: "#28282E", bd: "#363640",
+  tx: "#ECECEF", tm: "#8E8E9A", td: "#55555F",
+  ac: "#00D4AA", acd: "#00836A", gn: "#34D399", rd: "#FB7185",
+  or: "#FBBF24", yl: "#FDE68A", pu: "#A78BFA",
+};
+
+const iBase = {
+  background: K.s2, border: `1px solid ${K.bd}`, borderRadius: 4, color: K.tx,
+  padding: "7px 9px", fontSize: 12, fontFamily: "'SF Mono', 'Fira Code', monospace",
+  outline: "none", width: "100%", boxSizing: "border-box", transition: "border-color .15s",
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PRIMITIVES
+// ═══════════════════════════════════════════════════════════════
+const In = ({ value, onChange, placeholder, type = "text", style, ...p }) => (
+  <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+    style={{ ...iBase, ...style }} onFocus={e => e.target.style.borderColor = K.ac} onBlur={e => e.target.style.borderColor = K.bd} {...p} />
+);
+const Sl = ({ value, onChange, options, style }) => (
+  <select value={value} onChange={e => onChange(e.target.value)} style={{ ...iBase, appearance: "auto", cursor: "pointer", ...style }}>
+    {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+  </select>
+);
+const Tg = ({ children, color = K.ac }) => (
+  <span style={{ display: "inline-block", padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: .6, background: color + "18", color, fontFamily: "inherit" }}>{children}</span>
+);
+const Bt = ({ children, onClick, v = "def", style, disabled }) => {
+  const vs = {
+    def: { background: K.s3, color: K.tx, border: `1px solid ${K.bd}` },
+    pri: { background: K.acd, color: "#fff", border: `1px solid ${K.ac}` },
+    rm: { background: K.rd + "12", color: K.rd, border: `1px solid ${K.rd}40`, fontWeight: 700 },
+    gh: { background: "transparent", color: K.tm, border: "1px solid transparent" },
+  };
+  return <button onClick={onClick} disabled={disabled} style={{ ...vs[v], padding: "6px 12px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: disabled ? .4 : 1, transition: "all .15s", ...style }}>{children}</button>;
+};
+const Sc = ({ title, sub, right, children }) => (
+  <div style={{ background: K.s1, border: `1px solid ${K.bd}`, borderRadius: 8, padding: 16, marginBottom: 14 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 12, paddingBottom: 8, borderBottom: `1px solid ${K.bd}` }}>
+      <div><h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: K.tx, textTransform: "uppercase", letterSpacing: 1.2 }}>{title}</h2>
+        {sub && <p style={{ margin: "3px 0 0", fontSize: 11, color: K.tm }}>{sub}</p>}</div>{right}
+    </div>{children}</div>
+);
+const Fl = ({ label, children, w }) => (
+  <div style={{ width: w, minWidth: w, flexShrink: 0 }}>
+    <label style={{ fontSize: 9, color: K.td, textTransform: "uppercase", letterSpacing: .6, marginBottom: 3, display: "block", fontWeight: 700 }}>{label}</label>
+    {children}</div>
+);
+
+// ═══════════════════════════════════════════════════════════════
+// GUIDE
+// ═══════════════════════════════════════════════════════════════
+function Guide({ onBack }) {
+  const h2 = { fontSize: 15, fontWeight: 800, color: K.ac, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 1 };
+  const h3 = { fontSize: 13, fontWeight: 700, color: K.tx, margin: "14px 0 6px" };
+  const p = { fontSize: 12, color: K.tm, lineHeight: 1.75, margin: "0 0 8px" };
+  const fd = (name, src, desc) => (
+    <div style={{ display: "grid", gridTemplateColumns: "140px 130px 1fr", gap: 8, padding: "7px 0", borderBottom: `1px solid ${K.bd}18`, fontSize: 12 }}>
+      <span style={{ color: K.ac, fontWeight: 600 }}>{name}</span>
+      <span><Tg color={src === "PO" ? K.pu : src === "Commercial Invoice" ? K.or : src === "Packing List" ? K.gn : src === "Sourcing" ? K.ac : src === "Internal" ? K.pu : K.yl}>{src}</Tg></span>
+      <span style={{ color: K.tm }}>{desc}</span>
+    </div>
+  );
+  const card = (children) => (
+    <div style={{ background: K.s2, border: `1px solid ${K.bd}`, borderRadius: 6, padding: 16, marginBottom: 14 }}>{children}</div>
+  );
+
+  return (
+    <div style={{ maxWidth: 880, margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+        <Bt onClick={onBack}>{"\u2190"} Back</Bt>
+        <h1 style={{ margin: 0, fontSize: 20, fontWeight: 900, color: K.tx }}>How to Use This Tool</h1>
+      </div>
+
+      {card(<div>
+        <h2 style={h2}>What This Tool Does</h2>
+        <p style={p}>Takes total shipping costs for a raw materials shipment (trims, fabrics, components) and distributes them to each item. Your supplier's FOB price is not your real cost — freight, duties, brokerage, and surcharges typically add 15-40%. This tool makes that gap visible at the item level.</p>
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Source Documents</h2>
+        <p style={p}>Have these four documents ready when entering data:</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+          {[
+            { n: "Purchase Order", c: K.pu, d: "PO number, supplier code, item codes, quantities, unit costs, UOM." },
+            { n: "Commercial Invoice", c: K.or, d: "From supplier. Confirms prices, may include bank/declaration fees, HS codes, surcharges." },
+            { n: "Packing List", c: K.gn, d: "Carton-by-carton: item codes, quantities, bag counts, dimensions, weights." },
+            { n: "Freight Invoice", c: K.yl, d: "From logistics. Freight, brokerage, insurance, drayage, customs fees." },
+          ].map(d => (
+            <div key={d.n} style={{ background: K.s3, border: `1px solid ${K.bd}`, borderRadius: 4, padding: 10 }}>
+              <Tg color={d.c}>{d.n}</Tg>
+              <p style={{ ...p, marginTop: 8, marginBottom: 0 }}>{d.d}</p>
+            </div>
+          ))}
+        </div>
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Shipment Details</h2>
+        {fd("Shipment Ref", "Freight Invoice", "BOL, container ID, or tracking reference.")}
+        {fd("Shipment Mode", "Freight Invoice", "Ocean FCL/LCL, air, parcel, trucking. Affects volumetric calculations.")}
+        {fd("Container Type", "Freight Invoice", "FCL only. Container size for utilization %.")}
+        {fd("Incoterms", "PO", "FOB, CIF, EXW, etc. CIF = freight + insurance in unit price \u2014 don\u2019t double-count.")}
+        {fd("FX Rate", "Internal", "Conversion multiplier. Default 1.0 for USD-to-USD.")}
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Cost Components</h2>
+        <p style={p}>Shipment-level costs from the freight invoice. Each gets allocated across all items.</p>
+        <h3 style={h3}>Scalable vs Fixed</h3>
+        <p style={p}><span style={{ color: K.ac }}>Scalable</span> (freight, insurance) \u2014 allocate by weight/volume/value. <span style={{ color: K.or }}>Fixed</span> (brokerage, exam fees) \u2014 allocate by unit count.</p>
+        {fd("By Weight", "Calculated", "Item\u2019s share of total weight. Best for freight.")}
+        {fd("By Volume", "Calculated", "Item\u2019s share of total CBM. Best for bulky items.")}
+        {fd("By Unit Count", "Calculated", "Even split per unit. Best for flat fees.")}
+        {fd("By FOB Value", "Calculated", "Proportional to value. Best for insurance.")}
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Packages</h2>
+        <p style={p}>One entry per carton or wrapped bundle. Data comes from the packing list header for each carton.</p>
+        {fd("Package #", "Packing List", "Carton number as printed on the packing list.")}
+        {fd("L \u00D7 W \u00D7 H", "Packing List", "Outer dimensions in cm. Calculates CBM.")}
+        {fd("Gross Weight", "Packing List", "Total weight including packaging. In kg.")}
+        <p style={p}>When multiple items share a carton, weight and volume are split proportional to each item\u2019s weight within the carton.</p>
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Packing List Details (Per Item)</h2>
+        <p style={p}>Each row within a package = one item line from the packing list. Enter in the order you read it:</p>
+        {fd("PO Number", "PO", "Which PO this item belongs to.")}
+        {fd("Supplier Code", "PO", "Internal supplier code. Used for filtering and supplier-level fees.")}
+        {fd("Item Code", "Packing List", "Trim or fabric code.")}
+        {fd("Color Code", "Packing List", "Color variant.")}
+        {fd("Quantity", "Packing List", "Actual shipped qty, not PO qty.")}
+        {fd("UOM", "PO", "Pieces, yards, meters, pairs, sets, rolls.")}
+        {fd("Unit Weight", "Sourcing", "Weight per UOM. Select grams, kg, oz, or lbs.")}
+        {fd("Bags / Detail", "Packing List", "Number of bags and packing detail (e.g., \u20182 bags \u00D7 150 pcs\u2019).")}
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Internal Allocation (Styles & Lots)</h2>
+        <p style={p}>This section links the trim to your finished products and production runs. It\u2019s collapsible in the calculator \u2014 expand it when you need to track where materials are going.</p>
+        <h3 style={h3}>Style Numbers</h3>
+        <p style={p}>Which finished product style(s) this trim is destined for. One trim item can be tagged to multiple styles. Click + to add another style number. Example: buttons going to styles ABC, DEF, and GHI would have three entries.</p>
+        {fd("Style #", "Internal", "Your internal style number for the finished garment this trim is used in.")}
+        <h3 style={h3}>Production Lot Numbers</h3>
+        <p style={p}>Which garment production lot(s) this trim will be used in. Click + to add more. Track this to see landed cost visibility per production run.</p>
+        {fd("Lot #", "Internal", "Your internal production lot number for the final garment run.")}
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Commercial Invoice Details (Per Item)</h2>
+        <p style={p}>Expand the \u201CCommercial Invoice\u201D section on each item to enter financial data:</p>
+        {fd("FOB / Unit", "Commercial Invoice", "Actual price. May differ from PO due to increases.")}
+        {fd("HS Code", "Commercial Invoice", "Harmonized tariff code. Determines duty rate.")}
+        {fd("Duty Type", "Internal", "Ad Valorem (%), Specific ($/unit), or Compound.")}
+        {fd("Rate / Specific / Total", "Commercial Invoice", "Enter rate OR flat amount OR total \u2014 tool handles all three.")}
+        {fd("ADD/CVD %", "Customs Doc", "Anti-dumping surcharge if applicable.")}
+        {fd("Surcharges", "Commercial Invoice", "MOQ, dyeing, finish upcharges. Per-item, not per-shipment.")}
+        {fd("FX Override", "Internal", "If this supplier invoices in a different currency.")}
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Supplier-Level Costs</h2>
+        <p style={p}>Bank fees, declaration fees from a supplier\u2019s invoice. Enter supplier code + amount. Distributed across that supplier\u2019s items by FOB value.</p>
+      </div>)}
+
+      {card(<div>
+        <h2 style={h2}>Reading Results</h2>
+        {fd("Landed/Unit", "Calculated", "FOB + allocated costs + duty + surcharges = true cost.")}
+        {fd("Inflation %", "Calculated", "How much higher landed cost is vs FOB.")}
+        {fd("Freight Factor", "Calculated", "Total cost as % of FOB. Benchmark shipping efficiency.")}
+        {fd("Container Util", "Calculated", "FCL only. Below 70% = wasted space.")}
+      </div>)}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+export default function App() {
+  const [ship, setShip] = useState(mkShip);
+  const [cr, setCr] = useState(null);
+  const [master, setMaster] = useState(() => ld("lca3_master") || {});
+  const [hist, setHist] = useState(() => ld("lca3_hist") || []);
+  const [pg, setPg] = useState("calc");
+
+  useEffect(() => { sv("lca3_master", master); }, [master]);
+  useEffect(() => { sv("lca3_hist", hist); }, [hist]);
+
+  const inco = INCOS.find(i => i.value === ship.incoterms);
+  const sf = (f, v) => setShip(s => ({ ...s, [f]: v }));
+  const sC = (id, u) => setShip(s => ({ ...s, costs: s.costs.map(c => c.id === id ? u : c) }));
+  const aC = () => setShip(s => ({ ...s, costs: [...s.costs, mkCost()] }));
+  const rC = id => setShip(s => ({ ...s, costs: s.costs.filter(c => c.id !== id) }));
+  const sP = (id, u) => setShip(s => ({ ...s, packages: s.packages.map(p => p.id === id ? u : p) }));
+  const aP = () => setShip(s => ({ ...s, packages: [...s.packages, mkPkg()] }));
+  const rP = id => setShip(s => ({ ...s, packages: s.packages.length > 1 ? s.packages.filter(p => p.id !== id) : s.packages }));
+  const sI = (pId, iId, u) => setShip(s => ({ ...s, packages: s.packages.map(p => p.id === pId ? { ...p, items: p.items.map(i => i.id === iId ? u : i) } : p) }));
+  const aI = pId => setShip(s => ({ ...s, packages: s.packages.map(p => p.id === pId ? { ...p, items: [...p.items, mkItem()] } : p) }));
+  const rI = (pId, iId) => setShip(s => ({ ...s, packages: s.packages.map(p => p.id === pId ? { ...p, items: p.items.length > 1 ? p.items.filter(i => i.id !== iId) : p.items } : p) }));
+  const aSC = () => setShip(s => ({ ...s, supplier_costs: [...s.supplier_costs, mkSuppCost()] }));
+  const sSC = (id, u) => setShip(s => ({ ...s, supplier_costs: s.supplier_costs.map(c => c.id === id ? u : c) }));
+  const rSC = id => setShip(s => ({ ...s, supplier_costs: s.supplier_costs.filter(c => c.id !== id) }));
+
+  const run = () => {
+    const r = calc(ship); setCr(r);
+    if (!r.errs.length) {
+      setPg("results");
+      setHist(h => [{ id: uid(), date: new Date().toISOString(), ref: ship.shipment_ref, ship, result: r }, ...h].slice(0, 50));
+      ship.packages.forEach(pkg => pkg.items.forEach(it => {
+        if (it.item_code && !master[it.item_code])
+          setMaster(m => ({ ...m, [it.item_code]: { desc: it.description, wt: it.unit_weight, wtu: it.weight_uom, uom: it.uom, hs: it.hs_code, dr: it.duty_rate_pct, upd: new Date().toISOString() } }));
+      }));
+    }
+  };
+  const reset = () => { setShip(mkShip()); setCr(null); setPg("calc"); };
+
+  return (
+    <div style={{ background: K.bg, minHeight: "100vh", color: K.tx, fontFamily: "'SF Mono', 'Fira Code', Consolas, monospace", fontSize: 12 }}>
+      {/* NAV */}
+      <style>{`@keyframes lcaPulse { 0%, 100% { text-shadow: 0 0 10px #22C55E50, 0 0 24px #22C55E25; opacity: 1; } 50% { text-shadow: 0 0 20px #22C55E90, 0 0 48px #22C55E50, 0 0 72px #22C55E25; opacity: .9; } }`}</style>
+      <div style={{ background: K.s1, borderBottom: `1px solid ${K.bd}`, padding: "8px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <span style={{ fontSize: 30, fontWeight: 900, color: "#22C55E", letterSpacing: 1, animation: "lcaPulse 3s ease-in-out infinite" }}>LCA</span>
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[{ p: "calc", l: "Calculator" }, { p: "results", l: "Results" }, { p: "history", l: "History" }, { p: "master", l: "Item Master" }, { p: "guide", l: "How-To Guide" }].map(t =>
+            <Bt key={t.p} v={pg === t.p ? "pri" : "gh"} onClick={() => setPg(t.p)}>{t.l}</Bt>)}
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 1400, margin: "0 auto", padding: 16 }}>
+        {/* GUIDE */}
+        {pg === "guide" && <Guide onBack={() => setPg("calc")} />}
+
+        {/* CALCULATOR */}
+        {pg === "calc" && <div>
+          {/* Shipment */}
+          <Sc title="Shipment" sub="One per physical shipment" right={<Bt v="rm" onClick={reset}>Reset All</Bt>}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 10 }}>
+              {[{ l: "Ref", f: "shipment_ref", ph: "BOL / Container" }, { l: "Shipped", f: "date_shipped", t: "date" }, { l: "Received", f: "date_received", t: "date" }, { l: "Origin", f: "origin_country", ph: "Country" }, { l: "Destination", f: "destination", ph: "Warehouse" }, { l: "Currency", f: "currency", ph: "USD" }, { l: "FX Rate", f: "fx_rate", ph: "1.0", t: "number" }].map(x =>
+                <Fl key={x.f} label={x.l}><In value={ship[x.f]} onChange={v => sf(x.f, v)} placeholder={x.ph} type={x.t} /></Fl>)}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <Fl label="Mode"><Sl value={ship.shipment_mode} onChange={v => sf("shipment_mode", v)} options={SHIP_MODES} /></Fl>
+              {ship.shipment_mode === "ocean_fcl" && <Fl label="Container"><Sl value={ship.container_type} onChange={v => sf("container_type", v)} options={CONTAINERS} /></Fl>}
+              <Fl label="Incoterms"><Sl value={ship.incoterms} onChange={v => sf("incoterms", v)} options={INCOS} /></Fl>
+            </div>
+          </Sc>
+
+          {/* Costs */}
+          <Sc title="Cost Components" sub="From freight invoice" right={<Bt onClick={aC}>+ Add Cost</Bt>}>
+            {ship.costs.map(c => (
+              <div key={c.id} style={{ marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <div style={{ width: 180 }}><Sl value={c.cost_type} onChange={v => { const t = CTYPES.find(x => x.value === v); sC(c.id, { ...c, cost_type: v, allocation_method: t?.dm || "by_unit_count", nature: t?.nat || "scalable" }); }} options={CTYPES.map(t => ({ value: t.value, label: t.label }))} /></div>
+                  <div style={{ width: 100 }}><In value={c.amount} onChange={v => sC(c.id, { ...c, amount: v })} placeholder="0.00" type="number" /></div>
+                  <div style={{ width: 155 }}><Sl value={c.allocation_method} onChange={v => sC(c.id, { ...c, allocation_method: v })} options={ALLOC} /></div>
+                  <Tg color={c.nature === "fixed" ? K.or : K.ac}>{c.nature}</Tg>
+                  <Bt v="rm" onClick={() => rC(c.id)} style={{ padding: "4px 8px", fontSize: 10 }}>Remove</Bt>
+                </div>
+                {inco?.fr && (c.cost_type === "freight" || c.cost_type === "drayage") && parseFloat(c.amount) > 0 && <div style={{ fontSize: 10, color: K.or, marginTop: 2 }}>{"\u26A0"} May be in unit price under {ship.incoterms}</div>}
+                {inco?.ins && c.cost_type === "insurance" && parseFloat(c.amount) > 0 && <div style={{ fontSize: 10, color: K.or, marginTop: 2 }}>{"\u26A0"} May be in unit price under {ship.incoterms}</div>}
+              </div>
+            ))}
+          </Sc>
+
+          {/* Supplier Costs */}
+          <Sc title="Supplier-Level Costs" sub="Bank fees, declaration fees by supplier" right={<Bt onClick={aSC}>+ Add Fee</Bt>}>
+            {!ship.supplier_costs.length && <p style={{ color: K.td, fontSize: 11, margin: 0 }}>None. Click + Add Fee if supplier invoice includes bank/declaration fees.</p>}
+            {ship.supplier_costs.map(sc => (
+              <div key={sc.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                <div style={{ width: 110 }}><In value={sc.supplier_code} onChange={v => sSC(sc.id, { ...sc, supplier_code: v })} placeholder="Supplier Code" /></div>
+                <div style={{ width: 150 }}><Sl value={sc.cost_type} onChange={v => sSC(sc.id, { ...sc, cost_type: v })} options={SUPP_CTYPES} /></div>
+                <div style={{ width: 100 }}><In value={sc.amount} onChange={v => sSC(sc.id, { ...sc, amount: v })} placeholder="0.00" type="number" /></div>
+                <Bt v="rm" onClick={() => rSC(sc.id)} style={{ padding: "4px 8px", fontSize: 10 }}>Remove</Bt>
+              </div>
+            ))}
+          </Sc>
+
+          {/* Packages & Items */}
+          <Sc title="Packages & Items" sub="Cartons/wraps from packing list with items inside" right={<Bt onClick={aP}>+ Add Package</Bt>}>
+            {ship.packages.map((pkg, pi) => (
+              <div key={pkg.id} style={{ background: K.s2, border: `1px solid ${K.bd}`, borderRadius: 6, padding: 14, marginBottom: 12 }}>
+                {/* Package header */}
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+                  <Fl label="Package #" w="70px"><In value={pkg.package_number} onChange={v => sP(pkg.id, { ...pkg, package_number: v })} placeholder={`${pi + 1}`} /></Fl>
+                  <Fl label="L (cm)" w="65px"><In value={pkg.length_cm} onChange={v => sP(pkg.id, { ...pkg, length_cm: v })} type="number" placeholder="0" /></Fl>
+                  <Fl label="W (cm)" w="65px"><In value={pkg.width_cm} onChange={v => sP(pkg.id, { ...pkg, width_cm: v })} type="number" placeholder="0" /></Fl>
+                  <Fl label="H (cm)" w="65px"><In value={pkg.height_cm} onChange={v => sP(pkg.id, { ...pkg, height_cm: v })} type="number" placeholder="0" /></Fl>
+                  <Fl label="Gross Wt (kg)" w="90px"><In value={pkg.gross_weight_kg} onChange={v => sP(pkg.id, { ...pkg, gross_weight_kg: v })} type="number" placeholder="0" /></Fl>
+                  <div style={{ display: "flex", gap: 6, paddingBottom: 2 }}>
+                    <Bt onClick={() => aI(pkg.id)}>+ Add Item</Bt>
+                    <Bt v="rm" onClick={() => rP(pkg.id)}>Remove Package</Bt>
+                  </div>
+                </div>
+
+                {/* Items */}
+                {pkg.items.map((item, ii) => {
+                  const si = (f, v) => sI(pkg.id, item.id, { ...item, [f]: v });
+                  return (
+                    <div key={item.id} style={{ background: K.s3, border: `1px solid ${K.bd}`, borderRadius: 5, padding: 12, marginBottom: 8 }}>
+                      {/* Row number + remove */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontSize: 10, color: K.td, fontWeight: 700 }}>ITEM {ii + 1}</span>
+                        <Bt v="rm" onClick={() => rI(pkg.id, item.id)} style={{ padding: "3px 10px", fontSize: 10 }}>Remove Item</Bt>
+                      </div>
+
+                      {/* PACKING LIST section */}
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: K.gn, fontWeight: 700, textTransform: "uppercase", letterSpacing: .8, marginBottom: 6 }}>{"\u25A0"} Packing List</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <Fl label="PO #" w="75px"><In value={item.po_number} onChange={v => si("po_number", v)} placeholder="PO" /></Fl>
+                          <Fl label="Supplier" w="75px"><In value={item.supplier_code} onChange={v => si("supplier_code", v)} placeholder="Code" /></Fl>
+                          <Fl label="Item Code" w="85px"><In value={item.item_code} onChange={v => si("item_code", v)} placeholder="Code" /></Fl>
+                          <Fl label="Color" w="60px"><In value={item.color_code} onChange={v => si("color_code", v)} placeholder="CLR" /></Fl>
+                          <Fl label="Quantity" w="70px"><In value={item.quantity} onChange={v => si("quantity", v)} type="number" placeholder="0" /></Fl>
+                          <Fl label="UOM" w="80px"><Sl value={item.uom} onChange={v => si("uom", v)} options={UOMS} /></Fl>
+                          <Fl label="Description" w="130px"><In value={item.description} onChange={v => si("description", v)} placeholder="Desc" /></Fl>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end", marginTop: 6 }}>
+                          <Fl label="Unit Weight" w="75px"><In value={item.unit_weight} onChange={v => si("unit_weight", v)} type="number" placeholder="0" /></Fl>
+                          <Fl label="Wt UOM" w="85px"><Sl value={item.weight_uom} onChange={v => si("weight_uom", v)} options={WT_UOMS} /></Fl>
+                          <Fl label="Bags" w="45px"><In value={item.bag_count} onChange={v => si("bag_count", v)} type="number" placeholder="#" /></Fl>
+                          <Fl label="Bag Detail" w="100px"><In value={item.bag_detail} onChange={v => si("bag_detail", v)} placeholder="2\u00D7150 pcs" /></Fl>
+                        </div>
+                      </div>
+
+                      {/* INTERNAL ALLOCATION — styles + lots */}
+                      <div style={{ marginBottom: 8 }}>
+                        <button onClick={() => si("allocOpen", !item.allocOpen)} style={{
+                          background: "transparent", border: "none", color: K.pu, fontSize: 10, fontWeight: 700,
+                          textTransform: "uppercase", letterSpacing: .8, cursor: "pointer", padding: "4px 0", fontFamily: "inherit",
+                          display: "flex", alignItems: "center", gap: 4,
+                        }}>
+                          <span style={{ transform: item.allocOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform .15s", display: "inline-block" }}>{"\u25B6"}</span>
+                          Internal Allocation (Styles & Lots)
+                        </button>
+                        {item.allocOpen && (
+                          <div style={{ paddingTop: 6, paddingLeft: 8, borderLeft: `2px solid ${K.pu}30` }}>
+                            {/* Styles */}
+                            <div style={{ marginBottom: 8 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                <span style={{ fontSize: 9, color: K.td, fontWeight: 700, textTransform: "uppercase" }}>Style Numbers</span>
+                                <Bt v="gh" onClick={() => sI(pkg.id, item.id, { ...item, styles: [...(item.styles || []), mkStyleAlloc()] })} style={{ fontSize: 9, padding: "2px 6px" }}>+</Bt>
+                              </div>
+                              {(item.styles || []).length === 0 && <p style={{ color: K.td, fontSize: 10, margin: "0 0 4px" }}>No styles assigned.</p>}
+                              {(item.styles || []).map((st, si2) => (
+                                <div key={st.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                                  <div style={{ width: 120 }}><In value={st.style} onChange={v => { const arr = [...item.styles]; arr[si2] = { ...arr[si2], style: v }; sI(pkg.id, item.id, { ...item, styles: arr }); }} placeholder="Style #" /></div>
+                                  <Bt v="rm" onClick={() => sI(pkg.id, item.id, { ...item, styles: item.styles.filter(x => x.id !== st.id) })} style={{ padding: "3px 8px", fontSize: 9 }}>Remove</Bt>
+                                </div>
+                              ))}
+                            </div>
+                            {/* Lots */}
+                            <div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                <span style={{ fontSize: 9, color: K.td, fontWeight: 700, textTransform: "uppercase" }}>Production Lot Numbers</span>
+                                <Bt v="gh" onClick={() => sI(pkg.id, item.id, { ...item, lots: [...(item.lots || []), mkLotAlloc()] })} style={{ fontSize: 9, padding: "2px 6px" }}>+</Bt>
+                              </div>
+                              {(item.lots || []).length === 0 && <p style={{ color: K.td, fontSize: 10, margin: "0 0 4px" }}>No lots assigned.</p>}
+                              {(item.lots || []).map((lt, li) => (
+                                <div key={lt.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                                  <div style={{ width: 120 }}><In value={lt.lot} onChange={v => { const arr = [...item.lots]; arr[li] = { ...arr[li], lot: v }; sI(pkg.id, item.id, { ...item, lots: arr }); }} placeholder="Lot #" /></div>
+                                  <Bt v="rm" onClick={() => sI(pkg.id, item.id, { ...item, lots: item.lots.filter(x => x.id !== lt.id) })} style={{ padding: "3px 8px", fontSize: 9 }}>Remove</Bt>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* COMMERCIAL INVOICE section — collapsible */}
+                      <div>
+                        <button onClick={() => si("ciOpen", !item.ciOpen)} style={{
+                          background: "transparent", border: "none", color: K.or, fontSize: 10, fontWeight: 700,
+                          textTransform: "uppercase", letterSpacing: .8, cursor: "pointer", padding: "4px 0", fontFamily: "inherit",
+                          display: "flex", alignItems: "center", gap: 4,
+                        }}>
+                          <span style={{ transform: item.ciOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform .15s", display: "inline-block" }}>{"\u25B6"}</span>
+                          Commercial Invoice
+                        </button>
+                        {item.ciOpen && (
+                          <div style={{ paddingTop: 6, paddingLeft: 8, borderLeft: `2px solid ${K.or}30` }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
+                              <Fl label="FOB / Unit" w="80px"><In value={item.unit_cost_fob} onChange={v => si("unit_cost_fob", v)} type="number" placeholder="0.00" /></Fl>
+                              <Fl label="HS Code" w="100px"><In value={item.hs_code} onChange={v => si("hs_code", v)} placeholder="0000.00.0000" /></Fl>
+                              <Fl label="Duty Type" w="110px"><Sl value={item.duty_type} onChange={v => si("duty_type", v)} options={DTYPES} /></Fl>
+                              <Fl label="Rate %" w="55px"><In value={item.duty_rate_pct} onChange={v => si("duty_rate_pct", v)} type="number" placeholder="%" /></Fl>
+                              <Fl label="Specific $/u" w="65px"><In value={item.duty_specific} onChange={v => si("duty_specific", v)} type="number" placeholder="$" /></Fl>
+                              <Fl label="Duty Total" w="70px"><In value={item.duty_amount_total} onChange={v => si("duty_amount_total", v)} type="number" placeholder="Tot" /></Fl>
+                              <Fl label="ADD/CVD %" w="60px"><In value={item.duty_surcharge_pct} onChange={v => si("duty_surcharge_pct", v)} type="number" placeholder="%" /></Fl>
+                              <Fl label="FX Override" w="65px"><In value={item.fx_rate} onChange={v => si("fx_rate", v)} type="number" placeholder="\u2014" /></Fl>
+                            </div>
+                            {/* Surcharges */}
+                            <div style={{ marginTop: 8 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                <span style={{ fontSize: 9, color: K.td, fontWeight: 700, textTransform: "uppercase" }}>Surcharges</span>
+                                <Bt v="gh" onClick={() => sI(pkg.id, item.id, { ...item, surcharges: [...(item.surcharges || []), mkSurch()] })} style={{ fontSize: 9, padding: "2px 6px" }}>+ Add Surcharge</Bt>
+                              </div>
+                              {(item.surcharges || []).map((sc, si2) => (
+                                <div key={sc.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                                  <div style={{ width: 120 }}><Sl value={sc.type} onChange={v => { const surs = [...item.surcharges]; surs[si2] = { ...surs[si2], type: v }; sI(pkg.id, item.id, { ...item, surcharges: surs }); }} options={SURCH_TYPES} /></div>
+                                  <div style={{ width: 80 }}><In value={sc.amount} onChange={v => { const surs = [...item.surcharges]; surs[si2] = { ...surs[si2], amount: v }; sI(pkg.id, item.id, { ...item, surcharges: surs }); }} type="number" placeholder="$0.00" /></div>
+                                  <Bt v="rm" onClick={() => sI(pkg.id, item.id, { ...item, surcharges: item.surcharges.filter(x => x.id !== sc.id) })} style={{ padding: "3px 8px", fontSize: 9 }}>Remove</Bt>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </Sc>
+
+          <div style={{ display: "flex", justifyContent: "center", padding: "12px 0" }}>
+            <Bt v="pri" onClick={run} style={{ padding: "12px 44px", fontSize: 14, fontWeight: 900, letterSpacing: 1.5 }}>CALCULATE LANDED COST</Bt>
+          </div>
+          {cr?.errs?.length > 0 && <div style={{ background: K.rd + "12", border: `1px solid ${K.rd}30`, borderRadius: 6, padding: 12, marginTop: 8 }}>
+            {cr.errs.map((e, i) => <div key={i} style={{ color: K.rd, fontSize: 11, marginBottom: 2 }}>{"\u2022"} {e}</div>)}
+          </div>}
+        </div>}
+
+        {/* RESULTS */}
+        {pg === "results" && cr?.res && <div>
+          {cr.warns?.length > 0 && <div style={{ background: K.or + "12", border: `1px solid ${K.or}30`, borderRadius: 6, padding: 12, marginBottom: 14 }}>
+            {cr.warns.map((w, i) => <div key={i} style={{ color: K.or, fontSize: 11 }}>{"\u26A0"} {w}</div>)}
+          </div>}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 8, marginBottom: 14 }}>
+            {[
+              { l: "Total Units", v: cr.sum.tU?.toLocaleString() },
+              { l: "Total FOB", v: fmt(cr.sum.tF) },
+              { l: "Ship Cost", v: fmt(cr.sum.tSC) },
+              { l: "Landed", v: fmt(cr.sum.tL) },
+              { l: "Avg Inflation", v: pct(cr.sum.avgInfl), c: K.rd },
+              { l: "Freight Factor", v: pct(cr.sum.ff), c: K.or },
+              { l: "Cost/Unit", v: fmt(cr.sum.cpu) },
+              { l: "Cost/CBM", v: cr.sum.ccbm ? fmt(cr.sum.ccbm) : "\u2014" },
+              { l: "Cost/KG", v: cr.sum.ckg ? fmt(cr.sum.ckg) : "\u2014" },
+              ...(cr.sum.util ? [{ l: "Container Util", v: pct(cr.sum.util), c: cr.sum.util < 70 ? K.rd : K.gn }] : []),
+            ].map((c, i) => (
+              <div key={i} style={{ background: K.s1, border: `1px solid ${K.bd}`, borderRadius: 6, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: K.tm, textTransform: "uppercase", marginBottom: 4, letterSpacing: .5 }}>{c.l}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: c.c || K.tx }}>{c.v}</div>
+              </div>
+            ))}
+          </div>
+
+          <Sc title="Per-Item Landed Cost" right={<Bt onClick={() => expCsv(cr)}>Export CSV</Bt>}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead><tr>{["Pkg", "Item", "PO", "Supplier", "Color", "Qty", "UOM", "FOB/u", "Alloc/u", "Duty/u", "Srchg/u", "Landed/u", "Inflate%"].map((h, i) => (
+                  <th key={i} style={{ padding: "6px 8px", textAlign: i > 4 ? "right" : "left", fontSize: 9, color: K.td, borderBottom: `2px solid ${K.bd}`, textTransform: "uppercase", letterSpacing: .5, whiteSpace: "nowrap" }}>{h}</th>
+                ))}</tr></thead>
+                <tbody>{cr.res.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${K.bd}15` }}>
+                    <td style={{ padding: "6px 8px", color: K.td }}>{r.pkg || "\u2014"}</td>
+                    <td style={{ padding: "6px 8px", color: K.ac, fontWeight: 700 }}>{r.ic || "\u2014"}</td>
+                    <td style={{ padding: "6px 8px", color: K.tm }}>{r.po}</td>
+                    <td style={{ padding: "6px 8px", color: K.tm }}>{r.sup}</td>
+                    <td style={{ padding: "6px 8px", color: K.tm }}>{r.clr}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{r.qty}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: K.td }}>{r.uom}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmt(r.fob)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: K.tm }}>{fmt(r.apu)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: K.pu }}>{fmt(r.dpu)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: K.or }}>{fmt(r.spu)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 800, color: K.tx }}>{fmt(r.landed)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: K.rd, fontWeight: 700 }}>{pct(r.infl)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </Sc>
+
+          <Sc title="Reconciliation">
+            {cr.recon.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 14, padding: "5px 0", borderBottom: `1px solid ${K.bd}12`, alignItems: "center" }}>
+                <span style={{ width: 160 }}>{r.label}</span>
+                <span style={{ width: 80, textAlign: "right" }}>{fmt(r.entered)}</span>
+                <span style={{ width: 80, textAlign: "right" }}>{fmt(r.allocated)}</span>
+                <Tg color={r.pass ? K.gn : K.rd}>{r.pass ? "PASS" : "FAIL"}</Tg>
+              </div>
+            ))}
+          </Sc>
+          <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "10px 0" }}>
+            <Bt onClick={() => setPg("calc")}>{"\u2190"} Calculator</Bt>
+            <Bt v="pri" onClick={reset}>New Shipment</Bt>
+          </div>
+        </div>}
+
+        {/* HISTORY */}
+        {pg === "history" && <Sc title="History" sub={`${hist.length} saved`} right={hist.length > 0 && <Bt v="rm" onClick={() => setHist([])}>Clear All</Bt>}>
+          {!hist.length ? <p style={{ color: K.td, textAlign: "center", padding: 28 }}>No history yet.</p> :
+            hist.map(e => (
+              <div key={e.id} onClick={() => { setShip(e.ship); setCr(e.result); setPg("results"); }}
+                style={{ display: "grid", gridTemplateColumns: "135px 1fr 75px 90px 75px", gap: 8, padding: "7px 4px", borderBottom: `1px solid ${K.bd}12`, cursor: "pointer", borderRadius: 4 }}
+                onMouseEnter={ev => ev.currentTarget.style.background = K.s2} onMouseLeave={ev => ev.currentTarget.style.background = "transparent"}>
+                <span style={{ color: K.tm, fontSize: 10 }}>{new Date(e.date).toLocaleString()}</span>
+                <span style={{ color: K.ac, fontWeight: 600 }}>{e.ref || "Untitled"}</span>
+                <span style={{ textAlign: "right" }}>{e.result?.sum?.tU || 0} u</span>
+                <span style={{ textAlign: "right" }}>{fmt(e.result?.sum?.tL)}</span>
+                <span style={{ textAlign: "right" }}><Tg color={K.rd}>{pct(e.result?.sum?.avgInfl)}</Tg></span>
+              </div>
+            ))}
+        </Sc>}
+
+        {/* ITEM MASTER */}
+        {pg === "master" && <Sc title="Item Master" sub={`${Object.keys(master).length} items`} right={Object.keys(master).length > 0 && <Bt v="rm" onClick={() => setMaster({})}>Clear All</Bt>}>
+          {!Object.keys(master).length ? <p style={{ color: K.td, textAlign: "center", padding: 28 }}>Items auto-save on calculation.</p> :
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead><tr>{["Code", "Desc", "Weight", "Wt UOM", "UOM", "HS", "Duty%", "Updated", ""].map((h, i) => (
+                <th key={i} style={{ padding: "6px 8px", textAlign: "left", fontSize: 9, color: K.td, borderBottom: `2px solid ${K.bd}`, textTransform: "uppercase" }}>{h}</th>
+              ))}</tr></thead>
+              <tbody>{Object.entries(master).map(([k, v]) => (
+                <tr key={k} style={{ borderBottom: `1px solid ${K.bd}12` }}>
+                  <td style={{ padding: "6px 8px", color: K.ac, fontWeight: 600 }}>{k}</td>
+                  <td style={{ padding: "6px 8px", color: K.tm }}>{v.desc || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px" }}>{v.wt || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px" }}>{v.wtu || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px" }}>{v.uom || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px" }}>{v.hs || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px" }}>{v.dr || "\u2014"}</td>
+                  <td style={{ padding: "6px 8px", color: K.td, fontSize: 10 }}>{v.upd ? new Date(v.upd).toLocaleDateString() : "\u2014"}</td>
+                  <td><Bt v="rm" onClick={() => { const m = { ...master }; delete m[k]; setMaster(m); }} style={{ fontSize: 9, padding: "3px 8px" }}>Remove</Bt></td>
+                </tr>
+              ))}</tbody>
+            </table>}
+        </Sc>}
+      </div>
+    </div>
+  );
+}
